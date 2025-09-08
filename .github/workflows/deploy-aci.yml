@@ -32,7 +32,7 @@ jobs:
             ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.DOCKER_IMAGE_NAME }}:latest
 
       - name: Deploy Dify API to Azure Container Instances
-        uses: azure/aci-container-deploy@v1
+        uses: azure/aci-deploy@v1
         with:
           resource-group: ${{ secrets.RESOURCE_GROUP }}
           container-group: ${{ secrets.ACI_NAME }}
