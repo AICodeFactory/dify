@@ -23,8 +23,8 @@ jobs:
       - name: Build and push Dify API Docker image
         uses: docker/build-push-action@v5
         with:
-          context: . # Dockerfile 在项目根目录
-          file: Dockerfile.api # 指定使用 Dockerfile.api
+          context: ./api # Dockerfile 在项目根目录
+          file: Dockerfile # 指定使用 Dockerfile
           push: true
           registry: ${{ secrets.ACR_NAME }}.azurecr.io
           tags: |
