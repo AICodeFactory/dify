@@ -67,7 +67,7 @@ jobs:
       # --- 步骤 4: 部署 Dify API 到 Azure Container Instances (ACI) ---
       # 注意这里的 Action 名称修正：'azure/aci-container-deploy@v1'
       - name: Deploy Dify API to Azure Container Instances
-        uses: azure/aci-container-deploy@v1 # <--- 修正 Action 名称
+        uses: azure/aci-deploy@v1 # <--- 修正 Action 名称
         with:
           resource-group: ${{ secrets.RESOURCE_GROUP }}
           name: ${{ secrets.ACI_NAME }} # 容器组名称
