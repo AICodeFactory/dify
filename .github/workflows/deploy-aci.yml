@@ -5,14 +5,6 @@ on:
     branches:
       - main # 或您forked仓库的主分支名
 
-env:
-  # 统一在 env 中定义 ACR 登录服务器，方便引用和避免重复
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
-  # 统一定义 ACI 部署的区域 (因为 DNS label 需要它)
-  ACI_LOCATION: ${{ secrets.ACI_LOCATION }}
-  # Dify API 默认监听端口
-  DIFY_API_PORT: 3000
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -20,102 +12,78 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- 步骤 1: Azure CLI 登录 (用于后续可能的 Azure CLI 命令，以及确保 Service Principal 权限) ---
-      # 这个步骤是必要的，用于授权 Service Principal 在 Azure 环境内执行命令，如 `az container show`。
-      # 这里的 creds 应该包含 subscriptionId, clientId, clientSecret, tenantId。
-      # 我建议您在 GitHub Secrets 中创建一个 AZURE_CREDENTIALS secret，内容为这些信息的 JSON 字符串。
-      - name: Log in to Azure CLI
-        uses: azure/login@v1
-        with:
-          creds: |
-            {
-              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
-              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
-            }
-          enable-AzPSSession: true # 启用 Azure PowerShell Login，以防万一
-
-      # --- 步骤 2: Docker 登录到 Azure Container Registry (ACR) ---
-      # 这是解决 "UNAUTHORIZED" 错误的重点。
-      # 使用服务主体的 Client ID 和 Secret 进行 Docker 认证。
-      - name: Docker Login to Azure Container Registry
+      - name: Log in to Azure Container Registry
         uses: azure/docker-login@v1
         with:
-          login-server: ${{ env.ACR_LOGIN_SERVER }}
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
           username: ${{ secrets.AZURE_CLIENT_ID }}
           password: ${{ secrets.AZURE_CLIENT_SECRET }}
-
-      - name: List files in API directory for debugging
+          
+      - name: List files
         run: ls -la ./api
 
-      # --- 步骤 3: 构建并推送 Dify API Docker 镜像 ---
-      # `docker/build-push-action@v5` 是推荐的构建和推送方式
+      # Dify API 默认使用 Dockerfile.api (通常在项目根目录)
       - name: Build and push Dify API Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./api # Dockerfile 目录，确保 Dockerfile 位于此目录下
-          file: ./api/Dockerfile # 指定使用的 Dockerfile 路径
+          context: ./api # Dockerfile 目录
+          file: ./api/Dockerfile # 指定使用 Dockerfile
           push: true
+          registry: ${{ secrets.ACR_NAME }}.azurecr.io
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/${{ secrets.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.ACR_LOGIN_SERVER }}/${{ secrets.DOCKER_IMAGE_NAME }}:latest
-          # 缓存设置 (可选，但推荐用于加速构建)
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.DOCKER_IMAGE_NAME }}:latest
 
-      # --- 步骤 4: 部署 Dify API 到 Azure Container Instances (ACI) ---
-      # 注意这里的 Action 名称修正：'azure/aci-container-deploy@v1'
       - name: Deploy Dify API to Azure Container Instances
-        uses: azure/aci-deploy@v1 # <--- 修正 Action 名称
+        uses: azure/aci-deploy@v1
         with:
           resource-group: ${{ secrets.RESOURCE_GROUP }}
-          name: ${{ secrets.ACI_NAME }} # 容器组名称
-          image: ${{ env.ACR_LOGIN_SERVER }}/${{ secrets.DOCKER_IMAGE_NAME }}:latest
-          dns-name-label: ${{ secrets.ACI_NAME }}-${{ github.run_id }} # 确保 DNS label 唯一
-          ports: ${{ env.DIFY_API_PORT }} # Dify API 默认监听 3000 端口
-          cpu-cores: 1.5 # Dify API 需要计算资源，1.5C 通常是起点
-          memory-gb: 2.0 # Dify API 可能需要更多的内存，2GB 更安全
-          location: ${{ env.ACI_LOCATION }} # 使用环境变量的区域
-
-          # ACI 拉取镜像所需的 ACR 凭据，同样使用服务主体的 Client ID 和 Secret
-          registry-username: ${{ secrets.AZURE_CLIENT_ID }}
-          registry-password: ${{ secrets.AZURE_CLIENT_SECRET }}
-
+          container-group: ${{ secrets.ACI_NAME }}
+          image: ${{ secrets.ACR_NAME }}.azurecr.io/${{ secrets.DOCKER_IMAGE_NAME }}:latest
+          ports: 3000 # <--- Dify API 默认监听 3000 端口，请在 .env 中确认并在此处匹配
+          cpu-cores: 1.5 # Dify API 可能需要比 1C 更多的 CPU
+          memory-gb: 2.0 # Dify API 可能需要比 G 更多的内存
           environment-variables: |
             NODE_ENV=production
-            PORT=${{ env.DIFY_API_PORT }}
-            # --- 数据库和 Redis 连接（通过 Secrets 传递） ---
-            DATABASE_URL=${{ secrets.AZURE_POSTGRES_URL }}
-            REDIS_URL=${{ secrets.AZURE_REDIS_URL }}
-            SECRET_KEY=${{ secrets.DIFY_SECRET_KEY }}
-            ENGSYS_API_PREFIX=/api/v1
-            # APP_URL 这里我们先留空，因为 ACI 部署后才能获取 FQDN。
-            # Dify 的前端需要这个 URL 来调用后端 API。
-            # 如果 APP_URL 不设置 Dify 可能无法正常工作。
-            # 后续的步骤会获取 FQDN，然后在 ACI 部署完成后，您可能需要手动更新 ACI 的 APP_URL 环境变量。
-            # 或者选择使用 Azure CLI (az container update) 来更新。
-            # 这是一个 Dify 部署的常见挑战，因为 APP_URL 依赖于 ACI 部署时的动态 FQDN。
-            APP_URL=
-            # LLM providers - 您需要根据 Dify 的 LLM 集成配置填写
+            PORT=3000 # 确保与上面的 ports 匹配
+            # --- 数据库和 Redis 连接 ---
+            # !!! !!! !!! !!! !!! !!! !!! !!! IMPORTANT !!! !!! !!! !!! !!! !!! !!! !!!
+            # 这里您需要填入您实际的 PostgreSQL 和 Redis 连接信息。
+            # 强烈建议使用 Azure Key Vault 来存储敏感信息, 并配置 Managed Identity 来读取。
+            # 如果您只是测试，可以在 Secrets 中添加 AZURE_POSTGRES_URL, AZURE_REDIS_URL, DIFY_SECRET_KEY 等，
+            # 然后在这里引用它们。
+            # ----------------------------------------------------------------------
+            DATABASE_URL=${{ secrets.AZURE_POSTGRES_URL }}          # 例如: postgresql://user:password@host:port/dbname
+            REDIS_URL=${{ secrets.AZURE_REDIS_URL }}              # 例如: redis://:password@host:port
+            SECRET_KEY=${{ secrets.DIFY_SECRET_KEY }}            # 生成一个强随机字符串，不要用示例值
+            ENGSYS_API_PREFIX=/api/v1                           # Dify 默认 API 前缀
+            APP_URL=http://${{ secrets.ACI_NAME }}.${{ secrets.ACI_LOCATION }}.azurecontainer.io # ACI 的 FQDN, 稍后获取并更新
+            # Dify 可能需要的其他环境变量，参考 Dify 文档和 .env.example
+            # LLM providers - 您需要根据 Dify 的 LLM 集成配置填写（例如 OpenAI API Key）
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-            # ... Azure OpenAI 或其他 LLM 提供商的配置
+            # 如果使用 Azure OpenAI
+            # AZURE_OPENAI_API_KEY=${{ secrets.AZURE_OPENAI_API_KEY }}
+            # AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT }}
+            # AZURE_OPENAI_DEPLOYMENT_GROUPS=...
 
-      # --- 步骤 5: 获取 ACI FQDN 并提醒更新 APP_URL ---
-      # 此步骤需要 Azure CLI 登录，`azure/login@v1` 已经处理了。
-      - name: Get ACI FQDN and notify
+      - name: Get ACI FQDN and update APP_URL (Requires manual intervention to update ACI run once)
         id: getfqdn
         run: |
-          ACI_FQDN=$(az container show --resource-group ${{ secrets.RESOURCE_GROUP }} --name ${{ secrets.ACI_NAME }} --query ipAddress.fqdn --output tsv)
-          if [ -z "$ACI_FQDN" ]; then
-            echo "::error::Failed to retrieve ACI FQDN for ${{ secrets.ACI_NAME }}. Check container group name and status."
-            exit 1
-          fi
-          echo "ACI Public FQDN: https://$ACI_FQDN"
-          echo "ACI_URL=https://$ACI_FQDN" >> $GITHUB_ENV # 保存为环境变量，供后续步骤使用
+          ACI_FQDN=$(az container show --resource-group ${{ secrets.RESOURCE_GROUP }} --name ${{ secrets.ACI_NAME }} --query ipAddress.fqdn --output tsv) || echo "ACI not found or no FQDN"
+          echo "ACI Public IP Address FQDN: $ACI_FQDN"
+          echo "ACI_URL=https://$ACI_FQDN" >> $GITHUB_ENV # 保存为环境变量，在后面通知中使用
+          # !!! IMPORTANT !!!
+          # The APP_URL environment variable in ACI needs to be updated.
+          # The standard 'azure/aci-container-deploy@v1' action does not directly support updating
+          # environment variables for an *existing* container group without redeploying.
+          # For demonstration, we print the FQDN and show where it *should* be used.
+          # In a real-world scenario, you'd likely use a separate Azure CLI script
+          # or ARM/Bicep to update the ACI's environment variables if APP_URL changes.
+          echo "ACTION_REQUIRED: Update APP_URL in Dify ACI instance to: https://$ACI_FQDN"
 
-          echo "::notice title=Dify ACI Deployment Complete::Dify API deployed to ACI!"
-          echo "::notice::Access your Dify API at: https://$ACI_FQDN"
-          echo "::warning title=Manual Action Required::Please manually update the 'APP_URL' environment variable in your Dify ACI instance to: https://$ACI_FQDN"
-          echo "::warning::Also, ensure your PostgreSQL and Redis instances are accessible from ACI and configured correctly!"
-          echo "::warning::Make sure your LLM provider (e.g., OpenAI API Key) is correctly configured!"
+      - name: Notify deployment completion
+        run: |
+          echo "Dify API deployed to ACI!"
+          echo "Access your Dify API at: ${{ env.ACI_URL }}"
+          echo "Please manually update the APP_URL environment variable in the ACI instance to use this FQDN."
+          echo "Also, ensure Database and Redis are accessible and configured correctly!"
