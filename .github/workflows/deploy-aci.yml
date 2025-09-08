@@ -18,12 +18,15 @@ jobs:
           login-server: ${{ secrets.ACR_NAME }}.azurecr.io
           username: ${{ secrets.AZURE_CLIENT_ID }}
           password: ${{ secrets.AZURE_CLIENT_SECRET }}
+          
+      - name: List files
+        run: ls -la ./api
 
       # Dify API 默认使用 Dockerfile.api (通常在项目根目录)
       - name: Build and push Dify API Docker image
         uses: docker/build-push-action@v5
         with:
-          context: api # Dockerfile 目录
+          context: ./api # Dockerfile 目录
           file: Dockerfile # 指定使用 Dockerfile
           push: true
           registry: ${{ secrets.ACR_NAME }}.azurecr.io
